@@ -1,0 +1,5 @@
+shiny
+duckdb
+polars
+plotly
+pyyaml
