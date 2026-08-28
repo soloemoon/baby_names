@@ -1,0 +1,539 @@
+---
+title: "Birth Name Analysis"
+format: 
+  html:
+    embed-resources: true
+    page-layout: full
+execute:
+  echo: false
+jupyter: python3
+---
+
+```{python}
+import sys
+import os
+import importlib.util
+
+# Get the absolute path to the functions module
+functions_path = os.path.join(os.getcwd(), "scripts", "functions.py")
+
+# Load the module
+spec = importlib.util.spec_from_file_location("functions", functions_path)
+functions = importlib.util.module_from_spec(spec)
+sys.modules["functions"] = functions
+spec.loader.exec_module(functions)
+
+# Import all functions into the namespace
+from functions import *
+
+import yaml
+import plotly.express as px
+
+# Read in YAML containing file paths
+file_paths = yaml.safe_load(open("./utilities/file_paths.yaml", "r"))
+
+# Read in dataset
+name_data = pl.read_parquet(file_paths["parquet_year_path"])
+name_data_state = pl.read_parquet(file_paths["parquet_state_path"])
+
+sex_colors = {"M":"#1f77b4" , "F":"#ff7f0e"}
+
+# Define time periods for analysis
+time_periods = [
+    (1880, 1919, "1880-1919"),
+    (1920, 1959, "1920-1959"),
+    (1960, 1999, "1960-1999"),
+    (2000, 2025, "2000-2025")
+]
+
+```
+
+[**Data Notes**]{.underline} - Time Period: 1880 - 2025 - Annual dataset - Source: Social Security Administration via Data.gov - Analyzed over 8 million records - Primary question: How varied have birth names become over time and why?
+
+[**Observations**]{.underline}
+
+- Overall Name variability has increased over time for both sexes and has a strong correlation with the rise in births.
+  - This relationship has varied over time and can differ based on sex
+  - Female names tend to have greater variability than male names
+- Name consolidation (less name variability despite more births) occured betwen 1920-1959
+  - Name diversification accelerated after 1959
+- Name variability is likely influenced by cultural and immigration trends
+  - Further analysis needed on this topic
+- Names have been less concentrated across the top 10 (share of total names) over time. Regional differences is likely a factor.
+  - Further analysis needed
+
+```{python}
+# Use the function to create the visualization
+fig = plot_names_and_births_by_year(name_data, height=800)
+fig.show()
+```
+
+```{python}
+# Calculate diversity rate by decade
+decades = list(range(1880, 2030, 10))
+decade_diversity_results = []
+
+for decade_start in decades:
+    decade_end = decade_start + 9
+    
+    decade_data = name_data.filter(
+        (pl.col("year") >= decade_start) & (pl.col("year") <= decade_end)
+    )
+    
+    if decade_data.height == 0:
+        continue
+    
+    for sex_val in ["M", "F"]:
+        sex_data = decade_data.filter(pl.col("sex") == sex_val)
+        
+        if sex_data.height == 0:
+            continue
+        
+        total_births = sex_data.get_column("count").sum()
+        total_names = sex_data.get_column("name").n_unique()
+        
+        # Names per 1,000 births
+        names_per_1k_births = (total_names / total_births) * 1000
+        
+        decade_diversity_results.append({
+            "decade": f"{decade_start}s",
+            "decade_start": decade_start,
+            "sex": sex_val,
+            "total_births": total_births,
+            "total_distinct_names": total_names,
+            "names_per_1k_births": round(names_per_1k_births, 3)
+        })
+
+decade_diversity_df = pl.DataFrame(decade_diversity_results)
+```
+
+```{python}
+# Visualize decade-by-decade diversity rate trends
+fig = px.line(
+    decade_diversity_df,
+    x="decade_start",
+    y="names_per_1k_births",
+    color="sex",
+    markers=True,
+    title="Name Diversity Rate by Decade (Names per 1,000 Births)",
+    labels={"decade_start": "Decade", "names_per_1k_births": "Names per 1,000 Births", "sex": "Sex"},
+    color_discrete_map=sex_colors
+)
+
+# Add shaded regions for key eras
+fig.add_vrect(x0=1920, x1=1959, fillcolor="lightgray", opacity=0.2, 
+              annotation_text="Consolidation Era", annotation_position="top left")
+fig.add_vrect(x0=1960, x1=2025, fillcolor="lightgreen", opacity=0.1, 
+              annotation_text="Diversification Era", annotation_position="top left")
+
+fig.update_layout(
+    height=600,
+    hovermode="x unified",
+    xaxis=dict(tickmode="linear", tick0=1880, dtick=10)
+)
+
+fig.show()
+```
+
+```{python}
+# Calculate name diversity rate per 1,000 births by period
+diversity_rate_results = []
+
+for start_year, end_year, period_label in time_periods:
+    period_data = name_data.filter(
+        (pl.col("year") >= start_year) & (pl.col("year") <= end_year)
+    )
+    
+    for sex_val in ["M", "F"]:
+        sex_data = period_data.filter(pl.col("sex") == sex_val)
+        
+        # Total births and distinct names for the period
+        total_births = sex_data.get_column("count").sum()
+        total_names = sex_data.get_column("name").n_unique()
+        
+        # Average per year to get annual rates
+        n_years = end_year - start_year + 1
+        avg_births_per_year = total_births / n_years
+        avg_names_per_year = total_names / n_years
+        
+        # Names per 1,000 births
+        names_per_1k_births = (total_names / total_births) * 1000
+        
+        diversity_rate_results.append({
+            "period": period_label,
+            "sex": sex_val,
+            "total_births": total_births,
+            "total_distinct_names": total_names,
+            "avg_births_per_year": round(avg_births_per_year, 0),
+            "avg_names_per_year": round(avg_names_per_year, 0),
+            "names_per_1k_births": round(names_per_1k_births, 2)
+        })
+
+diversity_rate_df = pl.DataFrame(diversity_rate_results)
+```
+
+```{python}
+fig = plot_diversity_rate_trends(name_data, time_periods, height=500)
+fig.show()
+```
+
+```{python}
+# Calculate distinct names per year and total births per year for correlation analysis
+names_per_year = (
+    name_data
+    .group_by("year", "sex")
+    .agg(pl.col("name").n_unique().alias("n_names"))
+    .sort("year")
+)
+
+births_by_year = (
+    name_data
+    .group_by("year", "sex")
+    .agg(pl.col("count").sum().alias("total_births"))
+    .sort("year")
+)
+
+```
+
+[**Regression Observations:**]{.underline}
+
+- The relationship between name diversity and birth rates vary over time. Overall, there is a strong correlation between the diversity of names and births.
+  - \[**1880-1919**\]
+    - Name diversity was nearly perfectly correlated with the change in births
+  - \[**1920-1959**\]
+    - The correlation between name diversity and births diverged based on sex
+    - Female name diversity remained strongly correlated with births
+    - Male name diversity was negatively correlated
+  - \[**1960-1999**\]
+    - Name diversity did not have a strong relationship with births for both sexes
+    - Name diversity increased as births declined.
+  - \[**2000-2025**\]
+    - Female name diversity was strongly correlated with births. Male name diversity was not.
+    - Both sexes had increased name diversity. Female births rose during this period while male births declined.
+- Name concentration has decreased significantly over time and partially explains the de-coupling of name diversity and births that has occured in the mid 2000s.
+
+```{python}
+correlation_data = (
+    names_per_year
+    .join(births_by_year, on=["year", "sex"])
+)
+
+# Calculate correlation by sex
+correlations = (
+    correlation_data
+    .group_by("sex")
+    .agg(
+        pl.corr("n_names", "total_births").alias("correlation")
+    )
+)
+```
+
+```{python}
+# Calculate correlation for each time period and sex
+period_correlations = []
+
+for start_year, end_year, period_label in time_periods:
+    period_data = correlation_data.filter(
+        (pl.col("year") >= start_year) & (pl.col("year") <= end_year)
+    )
+    
+    period_corr = (
+        period_data
+        .group_by("sex")
+        .agg(
+            pl.corr("n_names", "total_births").alias("correlation"),
+            pl.len().alias("n_years")
+        )
+        .with_columns(pl.lit(period_label).alias("period"))
+    )
+    
+    period_correlations.append(period_corr)
+
+# Combine all periods
+all_period_correlations = pl.concat(period_correlations)
+
+# Pivot for easier viewing
+correlation_pivot = (
+    all_period_correlations
+    .pivot(
+        values="correlation",
+        index="period",
+        on="sex"
+    )
+    .select("period", "M", "F")
+)
+```
+
+```{python}
+# Visualize correlation trends over time
+fig = px.line(
+    all_period_correlations,
+    x="period",
+    y="correlation",
+    color="sex",
+    markers=True,
+    title="Correlation Between Distinct Names and Total Births Over Time",
+    labels={"period": "Time Period", "correlation": "Correlation", "sex": "Sex"},
+    color_discrete_map=sex_colors
+)
+
+fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+
+fig.update_layout(
+    height=500,
+    hovermode="x unified",
+    yaxis=dict(range=[-0.5, 1.0])
+)
+
+fig.show()
+```
+
+```{python}
+# Calculate concentration metrics for top names by period and sex
+concentration_results = []
+
+for start_year, end_year, period_label in time_periods:
+    period_data = name_data.filter(
+        (pl.col("year") >= start_year) & (pl.col("year") <= end_year)
+    )
+    
+    # Calculate total births and metrics by sex
+    for sex_val in ["M", "F"]:
+        sex_data = period_data.filter(pl.col("sex") == sex_val)
+        
+        # Group by name and get total counts
+        name_totals = (
+            sex_data
+            .group_by("name")
+            .agg(pl.col("count").sum().alias("total_count"))
+            .sort("total_count", descending=True)
+        )
+        
+        total_births = name_totals.get_column("total_count").sum()
+        total_names = name_totals.height
+        
+        # Calculate concentration: % of births from top N names
+        top_10_pct = name_totals.head(10).get_column("total_count").sum() / total_births * 100
+        top_50_pct = name_totals.head(50).get_column("total_count").sum() / total_births * 100
+        top_100_pct = name_totals.head(100).get_column("total_count").sum() / total_births * 100
+        
+        # Herfindahl-Hirschman Index (HHI) - measure of market concentration
+        # Higher values = more concentrated (less diversity)
+        market_shares = name_totals.get_column("total_count") / total_births
+        hhi = (market_shares ** 2).sum() * 10000  # Scaled to 0-10000
+        
+        concentration_results.append({
+            "period": period_label,
+            "sex": sex_val,
+            "total_names": total_names,
+            "top_10_pct": round(top_10_pct, 2),
+            "top_50_pct": round(top_50_pct, 2),
+            "top_100_pct": round(top_100_pct, 2),
+            "hhi": round(hhi, 2)
+        })
+
+concentration_df = pl.DataFrame(concentration_results)
+```
+
+```{python}
+# Visualize concentration trends
+fig = make_subplots(
+    rows=2, cols=2,
+    subplot_titles=(
+        "Top 10 Names (% of births)",
+        "Top 100 Names (% of births)",
+        "Total Distinct Names Used",
+        "HHI Concentration Index"
+    ),
+    vertical_spacing=0.12,
+    horizontal_spacing=0.1
+)
+
+# Top 10 concentration
+for sex_val in ["M", "F"]:
+    data = concentration_df.filter(pl.col("sex") == sex_val)
+    fig.add_trace(
+        go.Scatter(
+            x=data.get_column("period"),
+            y=data.get_column("top_10_pct"),
+            name=sex_val,
+            legendgroup=sex_val,
+            marker_color="#1f77b4" if sex_val == "M" else "#ff7f0e",
+            mode="lines+markers"
+        ),
+        row=1, col=1
+    )
+
+# Top 100 concentration
+for sex_val in ["M", "F"]:
+    data = concentration_df.filter(pl.col("sex") == sex_val)
+    fig.add_trace(
+        go.Scatter(
+            x=data.get_column("period"),
+            y=data.get_column("top_100_pct"),
+            name=sex_val,
+            legendgroup=sex_val,
+            marker_color="#1f77b4" if sex_val == "M" else "#ff7f0e",
+            mode="lines+markers",
+            showlegend=False
+        ),
+        row=1, col=2
+    )
+
+# Total distinct names
+for sex_val in ["M", "F"]:
+    data = concentration_df.filter(pl.col("sex") == sex_val)
+    fig.add_trace(
+        go.Scatter(
+            x=data.get_column("period"),
+            y=data.get_column("total_names"),
+            name=sex_val,
+            legendgroup=sex_val,
+            marker_color="#1f77b4" if sex_val == "M" else "#ff7f0e",
+            mode="lines+markers",
+            showlegend=False
+        ),
+        row=2, col=1
+    )
+
+# HHI index
+for sex_val in ["M", "F"]:
+    data = concentration_df.filter(pl.col("sex") == sex_val)
+    fig.add_trace(
+        go.Scatter(
+            x=data.get_column("period"),
+            y=data.get_column("hhi"),
+            name=sex_val,
+            legendgroup=sex_val,
+            marker_color="#1f77b4" if sex_val == "M" else "#ff7f0e",
+            mode="lines+markers",
+            showlegend=False
+        ),
+        row=2, col=2
+    )
+
+fig.update_layout(
+    height=700,
+    title_text="Name Concentration Trends Over Time by Sex",
+    hovermode="x unified"
+)
+
+fig.update_yaxes(title_text="% of Births", row=1, col=1)
+fig.update_yaxes(title_text="% of Births", row=1, col=2)
+fig.update_yaxes(title_text="Count", row=2, col=1)
+fig.update_yaxes(title_text="HHI", row=2, col=2)
+
+fig.show()
+```
+
+[**How names have changed over time**]{.underline}
+
+Name concentration has declined as name diversity has risen. The 1950s saw the largest rise in births relative to other decades. The top 10 Male and female names accounted for 32% and 21% of all birth names, respectively. In the 2020s, which have less births, the top 10 male and female names both accounted for less than 10% of all names.
+
+Not only has the concentration in names changed but so have the popular names. James and William are the only top 10 names from 1950 that appear in the top 10 in the 2020s. There are no overlapping top 10 names across the 1950s and 2020s for females.
+
+```{python}
+# Compare top names from 1950s vs 2020s
+decades_to_compare = [1950, 2020]
+top_names_comparison = []
+
+for decade_start in decades_to_compare:
+    decade_end = decade_start + 9
+    
+    decade_data = name_data.filter(
+        (pl.col("year") >= decade_start) & (pl.col("year") <= decade_end)
+    )
+    
+    for sex_val in ["M", "F"]:
+        sex_data = decade_data.filter(pl.col("sex") == sex_val)
+        
+        # Get top 10 names by total count
+        top_names = (
+            sex_data
+            .group_by("name")
+            .agg(pl.col("count").sum().alias("total_count"))
+            .sort("total_count", descending=True)
+            .head(10)
+        )
+        
+        # Calculate what % of total births each name represents
+        total_births = sex_data.get_column("count").sum()
+        top_names = top_names.with_columns(
+            (pl.col("total_count") / total_births * 100).alias("pct_of_births")
+        )
+        
+        top_names_comparison.append({
+            "decade": f"{decade_start}s",
+            "sex": sex_val,
+            "top_names": top_names
+        })
+```
+
+```{python}
+# Create visualization comparing concentration between decades
+comparison_data = []
+
+for item in top_names_comparison:
+    decade = item['decade']
+    sex = item['sex']
+    top_names_df = item['top_names']
+    
+    for rank in range(1, 11):
+        row = top_names_df.row(rank - 1)
+        comparison_data.append({
+            "decade": decade,
+            "sex": sex,
+            "rank": rank,
+            "name": row[0],
+            "pct_of_births": row[2]
+        })
+
+comparison_df = pl.DataFrame(comparison_data)
+
+# Create grouped bar chart
+fig = px.bar(
+    comparison_df,
+    x="rank",
+    y="pct_of_births",
+    color="sex",
+    facet_col="decade",
+    barmode="group",
+    title="Top 10 Names Market Share: 1950s vs 2020s",
+    labels={"rank": "Rank", "pct_of_births": "% of Total Births", "sex": "Sex"},
+    color_discrete_map={"M": "#1f77b4", "F": "#ff7f0e"},
+    category_orders={"decade": ["1950s", "2020s"]}
+)
+
+fig.update_layout(height=500)
+fig.update_xaxes(tickmode="linear", tick0=1, dtick=1)
+
+fig.show()
+```
+
+The top 10 male names account for 32% of all names in the 1950s and only 8% in the 2020s. The top 10 female names accounted for 21% of all names in the 1950s and only 7% in the 2020s.
+
+```{python}
+# Use the updated function
+fig = plot_interactive_top_names_comparison(
+    name_data,
+    default_left_decade=1950,
+    default_right_decade=2020,
+    default_left_sex="M",
+    default_right_sex="M",
+    sex_colors=sex_colors
+)
+fig.show()
+```
+
+Below we can visually see how names have changed over time. The top 10 names are fairly consistent and own a large share of birth names until around the 1960s. The top names began to diversify and the number of babies named drops significantly.
+
+```{python}
+# Use the new function
+fig = plot_animated_top_names_race(
+    name_data,
+    top_n=10,
+    sex_colors=sex_colors,
+    frame_duration=700,
+)
+fig.show()
+```
