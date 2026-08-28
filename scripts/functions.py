@@ -157,3 +157,56 @@ def export_polars_df_to_parquet(
         output_path (str): The path where the Parquet file will be saved.
     """
     df.write_parquet(output_path)
+
+# Probability of having a given name
+def compute_name_probability(
+    df: pl.DataFrame,
+    name: str, 
+    sex: str = None, 
+    year: int = None
+) -> dict:
+    """
+    Compute the probability someone will have a given name.
+    
+    Args:
+        name (str): The name to look up
+        sex (str): Optional - 'M' or 'F' to filter by sex
+        year (int): Optional - specific year to analyze
+    
+    Returns:
+        dict: Dictionary with probability and supporting statistics
+    """
+    # Filter data
+    filtered = df.filter(pl.col("name") == name)
+    
+    if sex:
+        filtered = filtered.filter(pl.col("sex") == sex)
+    
+    if year:
+        filtered = filtered.filter(pl.col("year") == year)
+    
+    # Calculate statistics
+    name_count = filtered.get_column("count").sum()
+    
+    # Get total for comparison
+    comparison_data = df
+    if sex:
+        comparison_data = comparison_data.filter(pl.col("sex") == sex)
+    if year:
+        comparison_data = comparison_data.filter(pl.col("year") == year)
+    
+    total_count = comparison_data.get_column("count").sum()
+    
+    # Calculate probability
+    probability = (name_count / total_count) if total_count > 0 else 0
+    
+    return {
+        "name": name,
+        "sex": sex if sex else "All",
+        "year": year if year else "All Years",
+        "count": name_count,
+        "total": total_count,
+        "probability": probability,
+        "percentage": probability * 100,
+        "odds": f"1 in {int(1/probability):,}" if probability > 0 else "N/A"
+    }
