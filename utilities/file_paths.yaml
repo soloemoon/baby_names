@@ -1,5 +1,5 @@
 dir_path: ./
 dataset_year_path: data\Year
 dataset_state_path: data\State
-parquet_year_path: ./data/baby_names.parquet
-parquet_state_path: ./data/baby_names_state.parquet
+parquet_year_path: data\baby_names.parquet
+parquet_state_path: data\baby_names_state.parquet
